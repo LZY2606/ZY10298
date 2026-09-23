@@ -54,9 +54,72 @@ export type ComplexityEstimator = (
 export type Complexity = any;
 
 // Map of complexities for possible types (of Union, Interface types)
-type ComplexityMap = {
+export type ComplexityMap = {
   [typeName: string]: number;
 };
+
+/**
+ * Determines whether a selection node should be included in the complexity
+ * calculation based on the @include / @skip directives and the given
+ * (already coerced) variable values.
+ */
+export function shouldIncludeNode(
+  node: FieldNode | FragmentSpreadNode | InlineFragmentNode,
+  includeDirectiveDef: GraphQLDirective,
+  skipDirectiveDef: GraphQLDirective,
+  variableValues: Record<string, any>
+): boolean {
+  let includeNode = true;
+  let skipNode = false;
+
+  for (const directive of node.directives ?? []) {
+    const directiveName = directive.name.value;
+    switch (directiveName) {
+      case 'include': {
+        const values = getDirectiveValues(
+          includeDirectiveDef,
+          node,
+          getExecutionVariableValues(variableValues)
+        );
+        if (typeof values.if === 'boolean') {
+          includeNode = values.if;
+        }
+        break;
+      }
+      case 'skip': {
+        const values = getDirectiveValues(
+          skipDirectiveDef,
+          node,
+          getExecutionVariableValues(variableValues)
+        );
+        if (typeof values.if === 'boolean') {
+          skipNode = values.if;
+        }
+        break;
+      }
+    }
+  }
+
+  return includeNode && !skipNode;
+}
+
+/**
+ * Runs the given estimators one after another and returns the first valid
+ * complexity score (a number that is not NaN). Returns undefined if no
+ * estimator produced a valid score.
+ */
+export function resolveFieldComplexity(
+  estimators: ReadonlyArray<ComplexityEstimator>,
+  estimatorArgs: ComplexityEstimatorArgs
+): number | undefined {
+  for (const estimator of estimators) {
+    const tmpComplexity = estimator(estimatorArgs);
+    if (typeof tmpComplexity === 'number' && !isNaN(tmpComplexity)) {
+      return tmpComplexity;
+    }
+  }
+  return undefined;
+}
 
 export interface QueryComplexityOptions {
   // The maximum allowed query complexity, queries above this threshold will be rejected
@@ -89,7 +152,7 @@ export interface QueryComplexityOptions {
   maxQueryNodes?: number;
 }
 
-function queryComplexityMessage(max: number, actual: number): string {
+export function queryComplexityMessage(max: number, actual: number): string {
   return (
     `The query exceeds the maximum complexity of ${max}. ` +
     `Actual complexity is ${actual}`
@@ -290,38 +353,14 @@ export default class QueryComplexity {
             }
             let innerComplexities = complexities;
 
-            let includeNode = true;
-            let skipNode = false;
-
-            for (const directive of childNode.directives ?? []) {
-              const directiveName = directive.name.value;
-              switch (directiveName) {
-                case 'include': {
-                  const values = getDirectiveValues(
-                    this.includeDirectiveDef,
-                    childNode,
-                    getExecutionVariableValues(this.variableValues)
-                  );
-                  if (typeof values.if === 'boolean') {
-                    includeNode = values.if;
-                  }
-                  break;
-                }
-                case 'skip': {
-                  const values = getDirectiveValues(
-                    this.skipDirectiveDef,
-                    childNode,
-                    getExecutionVariableValues(this.variableValues)
-                  );
-                  if (typeof values.if === 'boolean') {
-                    skipNode = values.if;
-                  }
-                  break;
-                }
-              }
-            }
-
-            if (!includeNode || skipNode) {
+            if (
+              !shouldIncludeNode(
+                childNode,
+                this.includeDirectiveDef,
+                this.skipDirectiveDef,
+                this.variableValues
+              )
+            ) {
               return complexities;
             }
 
@@ -383,24 +422,11 @@ export default class QueryComplexity {
                   type: typeDef,
                   context: this.requestContext,
                 };
-                const validScore = this.estimators.find((estimator) => {
-                  const tmpComplexity = estimator(estimatorArgs);
-
-                  if (
-                    typeof tmpComplexity === 'number' &&
-                    !isNaN(tmpComplexity)
-                  ) {
-                    innerComplexities = addComplexities(
-                      tmpComplexity,
-                      complexities,
-                      possibleTypeNames
-                    );
-                    return true;
-                  }
-
-                  return false;
-                });
-                if (!validScore) {
+                const score = resolveFieldComplexity(
+                  this.estimators,
+                  estimatorArgs
+                );
+                if (score === undefined) {
                   this.context.reportError(
                     new GraphQLError(
                       `No complexity could be calculated for field ${typeDef.name}.${field.name}. ` +
@@ -409,6 +435,11 @@ export default class QueryComplexity {
                   );
                   return complexities;
                 }
+                innerComplexities = addComplexities(
+                  score,
+                  complexities,
+                  possibleTypeNames
+                );
                 break;
               }
               case 'FragmentSpread': {
@@ -547,7 +578,7 @@ export default class QueryComplexity {
  * version expects, without referencing any version-specific graphql types
  * (which would leak into this package's published type definitions).
  */
-function getOperationVariableValues(
+export function getOperationVariableValues(
   schema: GraphQLSchema,
   variableDefinitions: readonly VariableDefinitionNode[],
   inputs: Record<string, any>
@@ -572,7 +603,9 @@ function getOperationVariableValues(
  * getOperationVariableValues) to getArgumentValues / getDirectiveValues
  * unchanged, mapping only the empty case to `undefined`.
  */
-function getExecutionVariableValues(variableValues: Record<string, any>): any {
+export function getExecutionVariableValues(
+  variableValues: Record<string, any>
+): any {
   if (!variableValues || Object.keys(variableValues).length === 0) {
     return undefined;
   }
@@ -586,7 +619,7 @@ function getExecutionVariableValues(variableValues: Record<string, any>): any {
  * @param complexityMap
  * @param possibleTypes
  */
-function addComplexities(
+export function addComplexities(
   complexity: number,
   complexityMap: ComplexityMap,
   possibleTypes: string[]

@@ -4,6 +4,7 @@
 
 export * from './estimators/index.js';
 export * from './QueryComplexity.js';
+export * from './QueryComplexityPlan.js';
 import { createComplexityRule as createComplexityRuleFn } from './createComplexityRule.js';
 
 export const createComplexityRule = createComplexityRuleFn;

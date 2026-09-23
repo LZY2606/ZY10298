@@ -202,6 +202,51 @@ try {
 }
 ```
 
+## Compiled query plans
+
+`getComplexity` re-walks the document, resolves fragments and looks up schema
+types on every call. When the same query is estimated repeatedly (e.g. once per
+request with different variables), you can compile the static document into a
+read-only traversal plan once and evaluate it per request:
+
+```javascript
+import {
+  compileComplexityPlan,
+  simpleEstimator,
+} from 'graphql-query-complexity';
+
+const plan = compileComplexityPlan(schema, query, {
+  estimators: [simpleEstimator({ defaultComplexity: 1 })],
+});
+
+// Compile-phase issues (unknown fragments, fragment cycles) are reported
+// separately from estimate-phase errors:
+plan.compileErrors.forEach((error) => console.warn(error.message));
+
+// The plan is read-only and can be shared across parallel requests.
+// Each estimate binds the request variables and context:
+const complexity = plan.estimate({
+  variables: { count: 10 },
+  maximumComplexity: 100,
+  onComplete: (value) => console.log('Complexity:', value),
+});
+```
+
+A plan is bound to the exact schema instance and estimator configuration it
+was compiled with. A matching query text or hash is not sufficient proof of
+compatibility — before reusing a cached plan, verify it (or pass the guards
+to `estimate`, which throws on mismatch):
+
+```javascript
+if (
+  cachedPlan &&
+  cachedPlan.isCompatibleWith({ schema, estimators, maxQueryNodes })
+) {
+  return cachedPlan;
+}
+return compileComplexityPlan(schema, query, { estimators, maxQueryNodes });
+```
+
 ## Prior Art
 
 This project is inspired by the following prior projects:
